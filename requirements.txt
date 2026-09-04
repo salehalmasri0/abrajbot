@@ -1,0 +1,8 @@
+pyTelegramBotAPI==4.36.1
+pandas==3.0.2
+openpyxl==3.1.5
+requests==2.33.1
+reportlab==4.4.10
+arabic-reshaper==3.0.1
+python-bidi==0.6.11
+python-dotenv==1.2.2
