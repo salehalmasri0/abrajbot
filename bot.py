@@ -318,28 +318,6 @@ ARABIC_WEEKDAYS_FULL = [
 ]
 
 
-def get_report_period(df):
-    """
-    يحاول استخراج (السنة، الشهر) الفعليين من أعمدة تاريخ
-    حقيقية داخل شيت الشبكة (يومية / حساب الاضافي)، بدلاً
-    من الاعتماد على شهر مكتوب يدويًا بالكود.
-    """
-
-    if df is None:
-        return None
-
-    for col in df.columns:
-
-        if isinstance(
-            col,
-            (dt.datetime, dt.date)
-        ):
-
-            return (col.year, col.month)
-
-    return None
-
-
 # =========================================================
 # رسائل تحفيزية
 # =========================================================
@@ -359,154 +337,696 @@ MOTIVATIONAL_TIPS = [
 
 
 # =========================================================
-# تنظيف الأرقام
+# أدوات التنظيف والمطابقة
 # =========================================================
 
-def clean_num(val):
+import html as _html
 
-    if pd.isna(val) or val is None:
+AUTO_SYNC_MINUTES = int(
+    os.environ.get("AUTO_SYNC_MINUTES", "30")
+)
+
+_DIGITS_MAP = str.maketrans(
+    "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+    "01234567890123456789"
+)
+
+
+def is_blank(v):
+
+    if v is None:
+        return True
+
+    try:
+        if pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    return str(v).strip().lower() in (
+        "", "nan", "none", "nat"
+    )
+
+
+def clean_num(val):
+    """
+    تحويل أي قيمة خلية إلى رقم.
+    تدعم: أرقام عربية، فواصل الآلاف، والأرقام السالبة
+    بين أقواس (50) أو بإشارة ناقص.
+    """
+
+    if is_blank(val):
         return 0.0
 
     s = str(val).strip()
 
-    if s in [
-        "",
-        "nan",
-        "None",
-        "#REF!",
-        "#VALUE!",
-        "#N/A"
-    ]:
+    if s in ("-", "—", "–") or s.startswith("#"):
         return 0.0
 
-    # تحويل الأرقام العربية
-    s = s.translate(
-        str.maketrans(
-            "٠١٢٣٤٥٦٧٨٩",
-            "0123456789"
-        )
-    )
+    s = s.translate(_DIGITS_MAP)
+    s = s.replace("٫", ".").replace("٬", ",")
+
+    negative = s.startswith("(") and s.endswith(")")
+
+    s = re.sub(r"[^\d\.\-]", "", s)
 
     try:
 
-        clean_str = re.sub(
-            r"[^\d\.\-]",
-            "",
-            s
-        )
+        num = float(s) if s not in ("", "-", ".") else 0.0
 
-        return float(clean_str) if clean_str else 0.0
-
-    except:
+    except ValueError:
 
         return 0.0
 
+    if negative:
+        num = -abs(num)
 
-# =========================================================
-# تنظيف الاسم العربي
-# =========================================================
+    return round(num, 4)
 
-def clean_arabic(text):
-
-    if pd.isna(text) or text is None:
-        return ""
-
-    t = str(text).strip()
-
-    if not t:
-        return ""
-
-    # إزالة التطويل وبعض العلامات
-    t = re.sub(
-        r"[ـ\-_\/\.]",
-        "",
-        t
-    )
-
-    # توحيد الحروف
-    t = re.sub(
-        r"[إأآا]",
-        "ا",
-        t
-    )
-
-    t = re.sub(
-        r"[يى]",
-        "ي",
-        t
-    )
-
-    t = re.sub(
-        r"ة",
-        "ه",
-        t
-    )
-
-    t = re.sub(
-        r"ؤ",
-        "و",
-        t
-    )
-
-    t = re.sub(
-        r"ئ",
-        "ي",
-        t
-    )
-
-    # إزالة مسافات زائدة
-    t = re.sub(
-        r"\s+",
-        " ",
-        t
-    ).strip().lower()
-
-    # توحيد بعض الكلمات
-    t = t.replace(
-        "عبد ",
-        "عبد"
-    )
-
-    t = t.replace(
-        "ابو ",
-        "ابو"
-    )
-
-    words = t.split()
-
-    # أول 3 كلمات للمطابقة
-    if len(words) >= 3:
-        return "".join(words[:3])
-
-    return "".join(words)
-
-
-# =========================================================
-# استخراج الأرقام فقط
-# =========================================================
 
 def get_digits_only(text):
 
-    if pd.isna(text) or text is None:
+    if is_blank(text):
         return ""
 
-    s = str(text)
-
-    s = s.translate(
-        str.maketrans(
-            "٠١٢٣٤٥٦٧٨٩",
-            "0123456789"
-        )
-    )
+    s = str(text).strip().translate(_DIGITS_MAP)
 
     if s.endswith(".0"):
         s = s[:-2]
 
-    return re.sub(
-        r"[^\d]",
-        "",
-        s
+    return re.sub(r"[^\d]", "", s)
+
+
+def norm_ar(text):
+    """
+    تطبيع عام للنص العربي (للمطابقة فقط):
+    إزالة التطويل والتشكيل، توحيد الهمزات والياء والتاء
+    المربوطة، وتحويل علامات الترقيم إلى مسافات.
+    """
+
+    if is_blank(text):
+        return ""
+
+    t = str(text).strip().lower().translate(_DIGITS_MAP)
+
+    t = re.sub(r"[\u0640\u064B-\u065F\u0670]", "", t)
+
+    t = re.sub(r"[إأآٱ]", "ا", t)
+
+    t = (
+        t.replace("ى", "ي")
+        .replace("ة", "ه")
+        .replace("ؤ", "و")
+        .replace("ئ", "ي")
     )
+
+    t = t.replace("_", " ")
+
+    t = re.sub(r"[^\w\s%]", " ", t)
+
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def normalize_header(text):
+
+    if text is None:
+        return ""
+
+    s = str(text).replace("ـ", "")
+
+    return re.sub(r"\s+", " ", s).strip()
+
+
+# =========================================================
+# الأسماء: تقسيم لكلمات (tokens) بدل الاعتماد على أول 3 كلمات
+# =========================================================
+#
+# المشكلة القديمة: كان البوت يدمج أول 3 كلمات فقط من الاسم
+# ثم يبحث بطريقة "نص داخل نص"، فإذا اختلف عدد الأسماء
+# بين شيت الموظفين وشيت الرواتب (مثلاً "أمين الحجوج" مقابل
+# "أمين محمد الحجوج") لا يجد صف الراتب، فيرجع الراتب
+# الأساسي فقط بدون أي بنود أخرى.
+# =========================================================
+
+def name_tokens(text):
+
+    t = norm_ar(text)
+
+    t = re.sub(r"\bعبد\s+", "عبد", t)
+    t = re.sub(r"\bابو\s+", "ابو", t)
+
+    tokens = []
+
+    for w in t.split():
+
+        if len(w) > 3 and w.startswith("ال") and w != "الله":
+            w = w[2:]
+
+        tokens.append(w)
+
+    return tokens
+
+
+def query_score(q_tokens, e_tokens):
+    """درجة تطابق ما كتبه المستخدم مع اسم موظف."""
+
+    if not q_tokens or not e_tokens:
+        return 0
+
+    if q_tokens == e_tokens:
+        return 100
+
+    qs, es = set(q_tokens), set(e_tokens)
+
+    if qs == es:
+        return 95
+
+    if qs <= es:
+        return 85 - min(len(es - qs), 10)
+
+    if all(
+        len(q) >= 2 and any(e.startswith(q) for e in e_tokens)
+        for q in q_tokens
+    ):
+        return max(40, 70 - abs(len(e_tokens) - len(q_tokens)))
+
+    return 0
+
+
+def sheet_name_score(e_tokens, r_tokens):
+    """درجة تطابق اسم الموظف مع اسم في شيت آخر."""
+
+    if not e_tokens or not r_tokens:
+        return 0
+
+    if e_tokens == r_tokens:
+        return 100
+
+    es, rs = set(e_tokens), set(r_tokens)
+
+    if es == rs:
+        return 95
+
+    # اسم الموظف (بشيت الموظفين) موجود بالكامل داخل اسم أطول
+    # في هذا الشيت: الحالة الأرجح (الكشف فيه الاسم الكامل)
+    if len(es) >= 2 and es <= rs:
+        return 85 - min(len(rs - es), 10)
+
+    # عكس ذلك: اسم الشيت أقصر من اسم الموظف (أقل ترجيحاً)
+    if len(rs) >= 2 and rs <= es:
+        return 70 - min(len(es - rs), 10)
+
+    return 0
+
+
+# =========================================================
+# التعرف على الأعمدة بالمعنى (وليس بالاسم الحرفي)
+# =========================================================
+#
+# المشكلة القديمة: كانت الأعمدة تُقرأ بأسماء حرفية ثابتة
+# مثل "الضمان" و"السلف" و"حسم"، فأي اختلاف بسيط في عنوان
+# العمود بالكشف (مثلاً "اقتطاع الضمان الاجتماعي") يجعل
+# القيمة 0 بصمت. الآن كل عمود يُقيَّم بقواعد مرنة.
+# =========================================================
+
+def _has(h, *words):
+    return all(w in h for w in words)
+
+
+def _any(h, words):
+    return any(w in h for w in words)
+
+
+_TOTAL_WORDS = ["مجموع", "اجمالي", "الاجمالي", "كلي"]
+_HOURS_WORDS = ["ساعات", "ساعه"]
+_HOLIDAY_WORDS = ["جمع", "عطل", "عيد", "اعياد"]
+_VALUE_WORDS = ["استحقاق", "قيمه", "مبلغ", "اجر", "مستحقات"]
+
+
+def r_id(h):
+
+    if h in (
+        "الرقم الوطني", "رقم وطني", "الرقم الشخصي",
+        "رقم شخصي", "الرقم الوظيفي", "رقم الموظف",
+        "الكود", "كود", "رقم الهويه"
+    ):
+        return 100
+
+    if _any(h, [
+        "الرقم الوطني", "رقم وطني",
+        "الرقم الشخصي", "رقم شخصي"
+    ]):
+        return 80
+
+    return 0
+
+
+def r_name(h):
+
+    if h in ("الاسم", "اسم", "الموظف", "العامل"):
+        return 100
+
+    if h.startswith("اسم ") and len(h.split()) <= 3:
+        return 90
+
+    return 0
+
+
+def r_dept(h):
+    return 100 if h in (
+        "القسم", "قسم", "الاداره", "المشروع", "الموقع"
+    ) else 0
+
+
+def r_job(h):
+    return 100 if h in (
+        "المسمي الوظيفي", "المسمي", "الوظيفه", "المهنه"
+    ) else 0
+
+
+def r_net(h):
+
+    if _any(h, ["صافي", "الصافي"]):
+        return 100
+
+    if "المستحق" in h and _any(h, ["راتب", "صرف"]):
+        return 80
+
+    return 0
+
+
+def r_ot_total(h):
+
+    if (
+        _any(h, _TOTAL_WORDS)
+        and _any(h, ["اضافي", "اضافه"])
+        and not _any(h, _HOURS_WORDS)
+        and not _any(h, ["عادي"] + _HOLIDAY_WORDS)
+    ):
+        return 100
+
+    return 0
+
+
+def r_ot_n_hrs(h):
+
+    if (
+        _any(h, _HOURS_WORDS)
+        and "عادي" in h
+        and not _any(h, _VALUE_WORDS)
+    ):
+        return 90
+
+    return 0
+
+
+def r_ot_h_hrs(h):
+
+    if (
+        _any(h, _HOURS_WORDS)
+        and _any(h, _HOLIDAY_WORDS)
+        and not _any(h, _VALUE_WORDS)
+    ):
+        return 90
+
+    return 0
+
+
+def r_ot_n_val(h):
+
+    if (
+        _any(h, _VALUE_WORDS)
+        and "عادي" in h
+        and not _any(h, _HOURS_WORDS)
+    ):
+        return 90
+
+    return 0
+
+
+def r_ot_h_val(h):
+
+    if (
+        _any(h, _VALUE_WORDS)
+        and _any(h, _HOLIDAY_WORDS)
+        and not _any(h, _HOURS_WORDS)
+    ):
+        return 90
+
+    return 0
+
+
+def r_basic(h):
+
+    if _any(h, [
+        "صافي", "ضمان", "مجموع", "اجمالي",
+        "استحقاق", "ساعات", "ساعه"
+    ]):
+        return 0
+
+    if h in ("الراتب الاساسي", "راتب اساسي", "الاساسي"):
+        return 100
+
+    if "اساسي" in h:
+        return 80
+
+    if h in ("الراتب", "راتب", "الراتب الشهري"):
+        return 60
+
+    return 0
+
+
+def r_ssc(h):
+
+    if "ضمان" not in h:
+        return 0
+
+    if _any(h, [
+        "شركه", "صاحب", "مساهمه", "منشاه", "نسبه",
+        "خاضع", "شامل", "للضمان", "راتب الضمان",
+        "اجر الضمان"
+    ]):
+        return 0
+
+    if h in (
+        "الضمان", "ضمان", "الضمان الاجتماعي",
+        "ضمان اجتماعي", "اقتطاع الضمان"
+    ):
+        return 100
+
+    return 70
+
+
+def r_advances(h):
+
+    if "سلف" not in h:
+        return 0
+
+    if _any(h, ["رصيد", "متبقي", "باقي"]):
+        return 0
+
+    if h in (
+        "السلف", "السلفه", "سلف", "سلفه",
+        "مجموع السلف", "اجمالي السلف"
+    ):
+        return 100
+
+    return 80
+
+
+def r_deductions(h):
+
+    if not _any(h, ["حسم", "خصم", "جزاء", "غرام", "اقتطاع"]):
+        return 0
+
+    if _any(h, ["ضمان", "سلف"] + _HOURS_WORDS):
+        return 0
+
+    is_total = _any(h, _TOTAL_WORDS)
+
+    # "إجمالي الاقتطاعات" يشمل الضمان والسلف أيضاً،
+    # فلا يُحسب ضمن الحسومات حتى لا يتكرر الخصم
+    if is_total and "اقتطاع" in h:
+        return 0
+
+    return 100 if is_total else 70
+
+
+def r_bonus(h):
+
+    if _any(h, ["حسم", "خصم"]):
+        return 0
+
+    return 90 if _any(h, [
+        "مكاف", "حافز", "حوافز", "علاوه", "علاوات"
+    ]) else 0
+
+
+def r_allow(h):
+
+    if "بدل" in h and not _any(
+        h, ["حسم", "خصم"] + _HOURS_WORDS
+    ):
+        return 70
+
+    return 0
+
+
+# ترتيب المعالجة مهم: العمود يُحجز لأول حقل يطابقه
+FIELD_RULES = [
+    ("id", r_id, False),
+    ("name", r_name, False),
+    ("net", r_net, False),
+    ("ot_total", r_ot_total, False),
+    ("ot_n_hrs", r_ot_n_hrs, False),
+    ("ot_h_hrs", r_ot_h_hrs, False),
+    ("ot_n_val", r_ot_n_val, False),
+    ("ot_h_val", r_ot_h_val, False),
+    ("basic", r_basic, False),
+    ("ssc", r_ssc, False),
+    ("advances", r_advances, False),
+    ("deductions", r_deductions, True),
+    ("bonus", r_bonus, False),
+    ("allow", r_allow, True),
+    ("dept", r_dept, False),
+    ("job", r_job, False)
+]
+
+RULES = {name: fn for name, fn, _ in FIELD_RULES}
+
+
+def resolve_fields(df):
+    """
+    يرجع قاموساً: اسم الحقل -> عمود (أو قائمة أعمدة للحقول
+    المتعددة مثل الحسومات والبدلات).
+    """
+
+    cols = list(df.columns)
+
+    keys = {c: norm_ar(c) for c in cols}
+
+    used = set()
+
+    result = {}
+
+    for field, fn, multi in FIELD_RULES:
+
+        scored = []
+
+        for i, c in enumerate(cols):
+
+            if c in used or str(c).startswith("__col"):
+                continue
+
+            s = fn(keys[c])
+
+            if s > 0:
+                scored.append((s, i, c))
+
+        if not scored:
+            continue
+
+        if multi:
+
+            top = [x for x in scored if x[0] >= 100]
+
+            # إن وُجد عمود "مجموع" نعتمده وحده، وإلا نجمع الأعمدة
+            chosen = top[:1] if top else sorted(
+                scored, key=lambda x: x[1]
+            )
+
+            result[field] = [c for _, _, c in chosen]
+
+            used.update(result[field])
+
+        else:
+
+            best = max(scored, key=lambda x: (x[0], -x[1]))
+
+            result[field] = best[2]
+
+            used.add(best[2])
+
+    return result
+
+
+# =========================================================
+# قراءة ملف Excel مرة واحدة (مع كاش حسب تاريخ الملف)
+# =========================================================
+
+_WB_CACHE = {"sig": None, "sheets": {}}
+
+
+def load_workbook_raw():
+
+    if not os.path.exists(LOCAL_FILE):
+        return {}
+
+    st = os.stat(LOCAL_FILE)
+
+    sig = (st.st_mtime, st.st_size)
+
+    if _WB_CACHE["sig"] == sig and _WB_CACHE["sheets"]:
+        return _WB_CACHE["sheets"]
+
+    try:
+
+        sheets = pd.read_excel(
+            LOCAL_FILE,
+            sheet_name=None,
+            header=None,
+            dtype=str
+        )
+
+    except Exception as e:
+
+        print(f"❌ تعذرت قراءة ملف Excel: {e}")
+
+        return {}
+
+    _WB_CACHE["sig"] = sig
+    _WB_CACHE["sheets"] = sheets
+
+    return sheets
+
+
+def find_sheet_header(raw, predicate, max_rows=60):
+
+    for idx in range(min(len(raw), max_rows)):
+
+        cells = [
+            normalize_header(x)
+            for x in raw.iloc[idx].values
+            if not is_blank(x)
+        ]
+
+        if cells and predicate(cells):
+            return idx
+
+    return None
+
+
+def table_from_raw(raw, header_row):
+
+    header = [
+        "" if is_blank(x) else normalize_header(x)
+        for x in raw.iloc[header_row].values
+    ]
+
+    cols, seen = [], {}
+
+    for i, h in enumerate(header):
+
+        if not h:
+            h = f"__col{i}"
+
+        if h in seen:
+
+            seen[h] += 1
+            h = f"{h}__{seen[h]}"
+
+        else:
+
+            seen[h] = 0
+
+        cols.append(h)
+
+    df = raw.iloc[header_row + 1:].copy()
+
+    df.columns = cols
+
+    return df.reset_index(drop=True)
+
+
+# =========================================================
+# تحميل ملف Excel من Drive
+# =========================================================
+
+_LAST_SYNC_ATTEMPT = {"t": 0.0}
+
+
+def sync_data():
+
+    if FILE_STATE["source"] == "upload":
+
+        if os.path.exists(LOCAL_FILE):
+
+            print(
+                "ℹ️ المصدر الحالي ملف مرفوع يدويًا - "
+                "لا حاجة للتحميل من Drive."
+            )
+
+            return True
+
+        print("❌ لا يوجد ملف محلي، ولم يتم رفع ملف بعد.")
+
+        return False
+
+    _LAST_SYNC_ATTEMPT["t"] = time.time()
+
+    try:
+
+        print("⏳ جاري تحميل أحدث ملف Excel...")
+
+        response = requests.get(
+            FILE_STATE["download_url"],
+            timeout=30
+        )
+
+        # ملف xlsx الحقيقي يبدأ بـ PK (zip). هذا يمنع حفظ
+        # صفحة HTML (صفحة تأكيد/خطأ من Drive) على أنها ملف
+        if (
+            response.status_code == 200
+            and len(response.content) > 5000
+            and response.content[:2] == b"PK"
+        ):
+
+            tmp = LOCAL_FILE + ".tmp"
+
+            with open(tmp, "wb") as f:
+                f.write(response.content)
+
+            os.replace(tmp, LOCAL_FILE)
+
+            print("✅ تم تحديث ملف Excel.")
+
+            return True
+
+        print("❌ لم يتم تحميل الملف بشكل صحيح.")
+
+    except Exception as e:
+
+        print(f"❌ خطأ أثناء تحميل الملف: {e}")
+
+    return False
+
+
+def maybe_auto_sync():
+    """
+    مزامنة تلقائية صامتة إذا كان الملف المحلي أقدم من
+    AUTO_SYNC_MINUTES دقيقة (لضمان أن البوت يقرأ آخر
+    نسخة من الكشف دون الحاجة لأمر /sync يدوي).
+    """
+
+    if AUTO_SYNC_MINUTES <= 0:
+        return
+
+    if FILE_STATE["source"] != "drive":
+        return
+
+    now = time.time()
+
+    if now - _LAST_SYNC_ATTEMPT["t"] < 300:
+        return
+
+    if (
+        os.path.exists(LOCAL_FILE)
+        and now - os.path.getmtime(LOCAL_FILE)
+        < AUTO_SYNC_MINUTES * 60
+    ):
+        return
+
+    sync_data()
 
 
 # =========================================================
@@ -523,1217 +1043,721 @@ def ar_txt(text):
 
 
 # =========================================================
-# تحميل ملف Excel
+# شيت بيانات الموظفين + البحث عن الموظف
 # =========================================================
 
-def sync_data():
+def load_employee_sheet(book):
 
-    if FILE_STATE["source"] == "upload":
+    for sheet_name, raw in book.items():
 
-        if os.path.exists(LOCAL_FILE):
-
-            print(
-                "ℹ️ المصدر الحالي ملف مرفوع يدويًا - "
-                "لا حاجة للتحميل من Drive."
-            )
-
-            return True
-
-        print(
-            "❌ لا يوجد ملف محلي، ولم يتم رفع ملف بعد."
-        )
-
-        return False
-
-    try:
-
-        print(
-            "⏳ جاري تحميل أحدث ملف Excel..."
-        )
-
-        response = requests.get(
-            FILE_STATE["download_url"],
-            timeout=30
-        )
-
-        if (
-            response.status_code == 200
-            and len(response.content) > 5000
+        if not any(
+            k in norm_ar(sheet_name)
+            for k in ("بيانات", "عمال", "موظفين")
         ):
+            continue
 
-            with open(
-                LOCAL_FILE,
-                "wb"
-            ) as f:
+        def pred(cells):
 
-                f.write(
-                    response.content
-                )
+            keys = [norm_ar(c) for c in cells]
 
-            print(
-                "✅ تم تحديث ملف Excel."
+            return (
+                any(r_name(k) for k in keys)
+                and any(r_id(k) for k in keys)
             )
 
-            return True
+        hr = find_sheet_header(raw, pred)
 
-        print(
-            "❌ لم يتم تحميل الملف بشكل صحيح."
+        if hr is None:
+            continue
+
+        return table_from_raw(raw, hr), sheet_name
+
+    return None, None
+
+
+def find_employees(df_emp, user_input):
+    """
+    يرجع قائمة مرشحين مرتبة بالأفضل. البحث بالرقم الوطني
+    مطابقة تامة، وبالاسم مطابقة كلمات (ترتيب الكلمات غير مهم
+    ولا يشترط كتابة الاسم الكامل).
+    """
+
+    fields = resolve_fields(df_emp)
+
+    name_col = fields.get("name")
+    id_col = fields.get("id")
+    dept_col = fields.get("dept")
+    job_col = fields.get("job")
+    basic_col = fields.get("basic")
+
+    q_digits = get_digits_only(user_input)
+    q_tokens = name_tokens(user_input)
+
+    is_id_query = len(q_digits) >= 4 and bool(
+        re.fullmatch(
+            r"[\d\s\-]+",
+            str(user_input).translate(_DIGITS_MAP).strip()
         )
-
-    except Exception as e:
-
-        print(
-            f"❌ خطأ أثناء تحميل الملف: {e}"
-        )
-
-    return False
-
-
-# =========================================================
-# قراءة شيت بيانات الموظفين
-# =========================================================
-
-def load_employee_sheet(file):
-
-    try:
-
-        xl = pd.ExcelFile(file)
-
-        for sheet_name in xl.sheet_names:
-
-            sheet_text = str(
-                sheet_name
-            )
-
-            if not any(
-                x in sheet_text
-                for x in [
-                    "بيانات",
-                    "عمال",
-                    "موظفين"
-                ]
-            ):
-                continue
-
-            raw = pd.read_excel(
-                file,
-                sheet_name=sheet_name,
-                header=None,
-                dtype=str
-            )
-
-            header_row = None
-
-            # البحث عن صف العناوين
-            for idx, row in raw.iterrows():
-
-                values = [
-                    normalize_header(x)
-                    for x in row.values
-                    if pd.notna(x)
-                ]
-
-                text = " ".join(values)
-
-                if (
-                    "الاسم" in text
-                    and (
-                        "الرقم الوطني" in text
-                        or "الرقم الشخصي" in text
-                        or "الكود" in text
-                    )
-                ):
-
-                    header_row = idx
-                    break
-
-            if header_row is None:
-                continue
-
-            df = pd.read_excel(
-                file,
-                sheet_name=sheet_name,
-                header=header_row,
-                dtype=str
-            )
-
-            df.columns = [
-                clean_col_name(c)
-                for c in df.columns
-            ]
-
-            return df
-
-    except Exception as e:
-
-        print(
-            f"❌ خطأ في قراءة شيت الموظفين: {e}"
-        )
-
-    return None
-
-
-# =========================================================
-# البحث عن الموظف
-# =========================================================
-
-def find_employee(
-    df_emp,
-    user_input
-):
-
-    if df_emp is None:
-        return None
-
-    query_digits = get_digits_only(
-        user_input
     )
 
-    query_text = clean_arabic(
-        user_input
-    )
-
-    name_col = None
-    nat_col = None
-    dept_col = None
-    job_col = None
-    base_sal_col = None
-
-    # -----------------------------------------------------
-    # تحديد الأعمدة
-    # -----------------------------------------------------
-
-    for col in df_emp.columns:
-
-        col_text = str(
-            col
-        ).strip()
-
-        if col_text in [
-            "الاسم",
-            "اسم الموظف",
-            "اسم"
-        ]:
-
-            name_col = col
-
-        if (
-            "الرقم الوطني" in col_text
-            or "الرقم الشخصي" in col_text
-            or col_text == "الكود"
-        ):
-
-            nat_col = col
-
-        if col_text == "القسم":
-
-            dept_col = col
-
-        if col_text in [
-            "المسمى",
-            "المسمى الوظيفي",
-            "الوظيفة"
-        ]:
-
-            job_col = col
-
-        if (
-            "الراتب الأساسي" in col_text
-            or "الراتب الاساسي" in col_text
-        ):
-
-            base_sal_col = col
-
-    # -----------------------------------------------------
-    # البحث
-    # -----------------------------------------------------
+    found = []
 
     for _, row in df_emp.iterrows():
 
-        # الاسم
-        r_name = ""
-
-        if name_col is not None:
-
-            value = row.get(
-                name_col,
-                ""
-            )
-
-            if pd.notna(value):
-
-                r_name = str(
-                    value
-                ).strip()
-
-        # الرقم الوطني
-        r_nat = ""
-
-        if nat_col is not None:
-
-            value = row.get(
-                nat_col,
-                ""
-            )
-
-            r_nat = get_digits_only(
-                value
-            )
-
-        clean_name = clean_arabic(
-            r_name
+        r_name_txt = (
+            "" if name_col is None or is_blank(row.get(name_col))
+            else str(row.get(name_col)).strip()
         )
 
-        matched = False
+        r_nat = (
+            get_digits_only(row.get(id_col))
+            if id_col is not None else ""
+        )
 
-        # مطابقة الرقم
-        if (
-            query_digits
-            and r_nat
-            and query_digits == r_nat
-        ):
+        score = 0
 
-            matched = True
+        if is_id_query:
 
-        # مطابقة الاسم
+            if r_nat and q_digits == r_nat:
+                score = 100
+
         elif (
-            query_text
-            and clean_name
-            and len(query_text) > 3
-            and (
-                query_text in clean_name
-                or clean_name in query_text
-            )
+            r_name_txt
+            and len(norm_ar(user_input).replace(" ", "")) >= 3
         ):
 
-            matched = True
+            score = query_score(
+                q_tokens,
+                name_tokens(r_name_txt)
+            )
 
-        if not matched:
+        if score <= 0:
             continue
 
-        # القسم
-        dept = "العمليات"
+        def cell(col, default):
 
-        if dept_col is not None:
+            if col is None or is_blank(row.get(col)):
+                return default
 
-            value = row.get(
-                dept_col,
-                ""
+            return str(row.get(col)).strip()
+
+        found.append({
+            "score": score,
+            "name": r_name_txt,
+            "job": cell(job_col, "موظف"),
+            "dept": cell(dept_col, "العمليات"),
+            "nat_id": r_nat if r_nat else "-",
+            "id_digits": r_nat,
+            "tokens": name_tokens(r_name_txt),
+            "base_sal_fallback": (
+                clean_num(row.get(basic_col))
+                if basic_col is not None else 0.0
             )
+        })
 
-            if pd.notna(value):
+    found.sort(key=lambda x: -x["score"])
 
-                dept = str(
-                    value
-                ).strip()
+    return found
 
-        # المسمى
-        job = "موظف"
 
-        if job_col is not None:
+def pick_candidates(cands):
+    """
+    يقرر هل النتيجة واضحة (موظف واحد) أم ملتبسة.
+    يرجع (موظف أو None، قائمة الملتبسين).
+    """
 
-            value = row.get(
-                job_col,
-                ""
-            )
+    if not cands:
+        return None, []
 
-            if pd.notna(value):
+    if len(cands) == 1:
+        return cands[0], []
 
-                job = str(
-                    value
-                ).strip()
+    if cands[0]["score"] >= 100 and cands[1]["score"] < 100:
+        return cands[0], []
 
-        # الراتب الأساسي (احتياطي في حال عدم توفره
-        # بشيت الرواتب الشهري)
-        base_sal_fallback = 0.0
-
-        if base_sal_col is not None:
-
-            value = row.get(
-                base_sal_col,
-                ""
-            )
-
-            if pd.notna(value):
-
-                base_sal_fallback = clean_num(
-                    value
-                )
-
-        return {
-            "name": r_name,
-            "job": job,
-            "dept": dept,
-            "nat_id": (
-                r_nat
-                if r_nat
-                else user_input
-            ),
-            "clean_name": clean_name,
-            "base_sal_fallback": base_sal_fallback
-        }
-
-    return None
+    return None, cands
 
 
 # =========================================================
-# تطبيع نص العناوين (إزالة التطويل والمسافات الزائدة)
-# بعض الشيتات الحقيقية تحتوي على "الاســـــــم" بتطويل
-# مما يمنع أي مطابقة نصية مباشرة لكلمة "الاسم"
+# البحث عن صف الموظف داخل أي شيت
 # =========================================================
 
-def normalize_header(text):
+def find_employee_row(df, emp):
+    """يرجع (الصف أو None، وصف طريقة المطابقة)."""
 
-    if text is None:
-        return ""
+    if df is None or df.empty:
+        return None, "الشيت فارغ"
 
-    s = str(text)
+    fields = resolve_fields(df)
 
-    # إزالة حرف التطويل (ـ)
-    s = s.replace("ـ", "")
+    name_col = fields.get("name")
+    id_col = fields.get("id")
 
-    s = re.sub(r"\s+", " ", s).strip()
+    if name_col is None and id_col is None:
 
-    return s
+        # آخر حل: أول عمود (سلوك النسخة القديمة)
+        name_col = df.columns[0]
 
+    emp_id = emp.get("id_digits", "")
 
-def clean_col_name(col):
+    if id_col is not None and emp_id:
 
-    import datetime as _dt
+        ids = df[id_col].map(get_digits_only)
 
-    # أعمدة التاريخ (أيام الشهر) تبقى كما هي كي تستمر
-    # دوال قراءة الأيام بالتعرف عليها ككائن تاريخ
-    if isinstance(col, (_dt.datetime, _dt.date, pd.Timestamp)):
-        return col
+        hit = df[ids == emp_id]
 
-    return normalize_header(col)
+        if len(hit):
+            return hit.iloc[0], "مطابقة بالرقم الوطني"
+
+    if name_col is None:
+        return None, "لا يوجد عمود اسم أو رقم وطني"
+
+    scored = []
+
+    for idx, v in df[name_col].items():
+
+        if is_blank(v):
+            continue
+
+        s = sheet_name_score(emp["tokens"], name_tokens(v))
+
+        if s > 0:
+            scored.append((s, idx))
+
+    if not scored:
+        return None, "الاسم غير موجود في هذا الشيت"
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+
+    best = scored[0][0]
+
+    tops = [i for s, i in scored if s == best]
+
+    if len(tops) > 1 and best < 95:
+
+        return None, (
+            "عدة أسماء متشابهة (تطابق جزئي) - "
+            "تم تجاهلها لتجنب خلط رواتب موظفين"
+        )
+
+    how = (
+        "مطابقة اسم كاملة" if best >= 95
+        else "مطابقة اسم جزئية (اسم أقصر داخل اسم أطول)"
+    )
+
+    return df.loc[tops[0]], how
 
 
 # =========================================================
-# استخراج رقم اليوم (01-31) من قيمة عمود
-# تدعم: "01" / "1" / تاريخ Excel كامل (datetime)
-# / نص تاريخ مثل "2026-07-01 00:00:00"
+# استخراج رقم اليوم (01-31) من عنوان عمود
 # =========================================================
 
 def parse_day_number(val):
 
-    if val is None:
+    if is_blank(val):
         return None
 
-    try:
-        if pd.isna(val):
-            return None
-    except (TypeError, ValueError):
-        pass
-
-    # تاريخ حقيقي (datetime / Timestamp / date)
     import datetime as _dt
 
-    if isinstance(val, (_dt.datetime, _dt.date)):
+    if isinstance(val, (_dt.datetime, _dt.date, pd.Timestamp)):
         return val.day
 
-    if isinstance(val, pd.Timestamp):
-        return val.day
+    s = str(val).strip().translate(_DIGITS_MAP)
 
-    s = str(val).strip()
-
-    if not s or s.lower() in ["nan", "none", "nat"]:
-        return None
-
-    # تحويل الأرقام العربية
-    s = s.translate(
-        str.maketrans(
-            "٠١٢٣٤٥٦٧٨٩",
-            "0123456789"
-        )
-    )
-
-    # رقم يوم مباشر: "1" .. "31" أو "01" .. "31"
     if re.fullmatch(r"\d{1,2}", s):
 
         n = int(s)
 
-        if 1 <= n <= 31:
-            return n
+        return n if 1 <= n <= 31 else None
 
-        return None
-
-    # نص تاريخ مثل "2026-07-01" أو "2026-07-01 00:00:00"
-    m = re.match(
-        r"^\d{4}-\d{2}-(\d{2})",
-        s
-    )
+    m = re.match(r"^\d{4}-\d{2}-(\d{2})", s)
 
     if m:
         return int(m.group(1))
 
-    # نص تاريخ مثل "01/07/2026" أو "01-07-2026"
-    m = re.match(
-        r"^(\d{1,2})[/-]\d{1,2}[/-]\d{2,4}",
-        s
-    )
+    m = re.match(r"^(\d{1,2})[/-]\d{1,2}[/-]\d{2,4}", s)
 
     if m:
+
         n = int(m.group(1))
 
-        if 1 <= n <= 31:
-            return n
+        return n if 1 <= n <= 31 else None
 
     return None
 
 
 # =========================================================
-# البحث عن شيت فيه الأيام 01 - 31
+# استخراج الشهر والسنة الفعليين
 # =========================================================
 
-def load_grid_sheet(
-    file,
-    sheet_keywords
-):
+_MONTH_NAMES = [
+    (1, "يناير"), (2, "فبراير"), (3, "مارس"), (4, "ابريل"),
+    (5, "مايو"), (6, "يونيو"), (7, "يوليو"), (8, "اغسطس"),
+    (9, "سبتمبر"), (10, "اكتوبر"), (11, "نوفمبر"),
+    (12, "ديسمبر"),
+    (1, "كانون الثاني"), (2, "شباط"), (3, "اذار"),
+    (4, "نيسان"), (5, "ايار"), (6, "حزيران"), (7, "تموز"),
+    (8, "اب"), (9, "ايلول"), (10, "تشرين الاول"),
+    (11, "تشرين الثاني"), (12, "كانون الاول")
+]
 
-    try:
-
-        xl = pd.ExcelFile(file)
-
-        for sheet_name in xl.sheet_names:
-
-            sheet_text = str(
-                sheet_name
-            )
-
-            if not any(
-                keyword in sheet_text
-                for keyword in sheet_keywords
-            ):
-                continue
-
-            print(
-                f"🔎 قراءة الشيت: {sheet_name}"
-            )
-
-            raw = pd.read_excel(
-                file,
-                sheet_name=sheet_name,
-                header=None,
-                dtype=str
-            )
-
-            header_row = None
-
-            # -------------------------------------------------
-            # البحث عن صف العناوين
-            # يجب أن يحتوي على الاسم و01 و02 و03
-            # -------------------------------------------------
-
-            for idx, row in raw.iterrows():
-
-                values = []
-
-                for x in row.values:
-
-                    if pd.notna(x):
-
-                        value = normalize_header(
-                            x
-                        )
-
-                        values.append(
-                            value
-                        )
-
-                has_name = any(
-                    x in [
-                        "الاسم",
-                        "اسم",
-                        "اسم الموظف"
-                    ]
-                    for x in values
-                )
-
-                # نستخرج أرقام الأيام من كل خلايا الصف
-                # (تدعم "01"/"1" وأيضاً التواريخ الكاملة
-                # التي يخزنها Excel لأعمدة الأيام)
-                day_numbers = set()
-
-                for x in row.values:
-
-                    d = parse_day_number(x)
-
-                    if d is not None:
-                        day_numbers.add(d)
-
-                has_01 = 1 in day_numbers
-                has_02 = 2 in day_numbers
-                has_03 = 3 in day_numbers
-
-                if (
-                    has_name
-                    and has_01
-                    and has_02
-                    and has_03
-                ):
-
-                    header_row = idx
-                    break
-
-            if header_row is None:
-
-                print(
-                    f"⚠️ لم يتم العثور على صف عناوين في {sheet_name}"
-                )
-
-                continue
-
-            # -------------------------------------------------
-            # قراءة البيانات بعد صف العناوين
-            # -------------------------------------------------
-
-            df = pd.read_excel(
-                file,
-                sheet_name=sheet_name,
-                header=header_row,
-                dtype=str
-            )
-
-            # تنظيف أسماء الأعمدة (مع الحفاظ على أعمدة
-            # التاريخ ككائنات تاريخ لضمان عمل parse_day_number)
-            df.columns = [
-                clean_col_name(c)
-                for c in df.columns
-            ]
-
-            print(
-                f"✅ تم العثور على صف العناوين: {header_row + 1}"
-            )
-
-            print(
-                "📌 الأعمدة:",
-                list(df.columns)[:35]
-            )
-
-            return df
-
-    except Exception as e:
-
-        print(
-            f"❌ خطأ في قراءة الشيت: {e}"
-        )
-
-    return None
+_MONTH_NAMES.sort(key=lambda x: -len(x[1]))
 
 
-# =========================================================
-# البحث عن صف الموظف داخل شيت اليومية / الإضافي
-# =========================================================
+def period_from_text(text):
 
-def find_employee_row(
-    df,
-    target_clean_name
-):
+    raw = str(text).translate(_DIGITS_MAP)
 
-    if df is None or df.empty:
-        return None
-
-    # -----------------------------------------------------
-    # تحديد عمود الاسم
-    # -----------------------------------------------------
-
-    name_column = None
-
-    for col in df.columns:
-
-        col_text = str(
-            col
-        ).strip()
-
-        if col_text in [
-            "الاسم",
-            "اسم",
-            "اسم الموظف"
-        ]:
-
-            name_column = col
-            break
-
-    # إذا لم نجد اسم
-    if name_column is None:
-
-        if len(df.columns) > 0:
-
-            name_column = df.columns[0]
-
-    if name_column is None:
-        return None
-
-    # -----------------------------------------------------
-    # البحث
-    # -----------------------------------------------------
-
-    for _, row in df.iterrows():
-
-        value = row.get(
-            name_column,
-            ""
-        )
-
-        if pd.isna(value):
-            continue
-
-        employee_name = str(
-            value
-        ).strip()
-
-        if not employee_name:
-            continue
-
-        clean_name = clean_arabic(
-            employee_name
-        )
-
-        if not clean_name:
-            continue
-
-        if (
-            target_clean_name in clean_name
-            or clean_name in target_clean_name
-        ):
-
-            print(
-                f"✅ تم العثور على الموظف: {employee_name}"
-            )
-
-            return row
-
-    print(
-        "⚠️ لم يتم العثور على الموظف داخل الشيت."
+    m = re.search(
+        r"(?<!\d)(\d{1,2})\s*[/\-.]\s*(20\d{2})(?!\d)", raw
     )
 
+    if m and 1 <= int(m.group(1)) <= 12:
+        return int(m.group(2)), int(m.group(1))
+
+    m = re.search(
+        r"(?<!\d)(20\d{2})\s*[/\-.]\s*(\d{1,2})(?!\d)", raw
+    )
+
+    if m and 1 <= int(m.group(2)) <= 12:
+        return int(m.group(1)), int(m.group(2))
+
+    t = " " + norm_ar(raw) + " "
+
+    ym = re.search(r"(?<!\d)(20\d{2})(?!\d)", t)
+
+    year = int(ym.group(1)) if ym else dt.datetime.now().year
+
+    for month, name in _MONTH_NAMES:
+
+        if f" {name} " in t:
+            return year, month
+
     return None
 
 
+def detect_period(raw, header_row, sheet_name):
+
+    for x in raw.iloc[header_row].values:
+
+        if is_blank(x):
+            continue
+
+        m = re.match(
+            r"^(\d{4})-(\d{2})-\d{2}",
+            str(x).strip()
+        )
+
+        if m:
+            return int(m.group(1)), int(m.group(2))
+
+    texts = [str(sheet_name)]
+
+    for i in range(header_row):
+
+        texts += [
+            str(x) for x in raw.iloc[i].values
+            if not is_blank(x)
+        ]
+
+    return period_from_text(" ".join(texts))
+
+
 # =========================================================
-# استخراج بيانات الأيام 01 - 31
+# شيتات الشبكة (اليومية / الإضافي)
 # =========================================================
 
-def extract_grid_data(
-    df,
-    target_clean_name
-):
+def load_grid_sheets(book, keywords, exclude=()):
 
-    days_data = {}
+    results = []
 
-    if df is None or df.empty:
+    kws = [norm_ar(k) for k in keywords]
+    exs = [norm_ar(k) for k in exclude]
 
-        return days_data
+    for sheet_name, raw in book.items():
 
-    employee_row = find_employee_row(
-        df,
-        target_clean_name
-    )
+        sn = norm_ar(sheet_name)
 
-    if employee_row is None:
+        if not any(k in sn for k in kws):
+            continue
 
-        # إنشاء 01 - 31 فارغة
+        if any(k in sn for k in exs):
+            continue
+
+        def pred(cells):
+
+            keys = [norm_ar(c) for c in cells]
+
+            if not any(r_name(k) for k in keys):
+                return False
+
+            days = {parse_day_number(c) for c in cells}
+
+            return {1, 2, 3} <= days
+
+        hr = find_sheet_header(raw, pred)
+
+        if hr is None:
+
+            print(f"⚠️ لم يتم العثور على صف عناوين في {sheet_name}")
+
+            continue
+
+        results.append({
+            "sheet": sheet_name,
+            "df": table_from_raw(raw, hr),
+            "period": detect_period(raw, hr, sheet_name)
+        })
+
+    return results
+
+
+def extract_grid_data(grids, emp):
+    """
+    يرجع (قاموس الأيام، اسم الشيت، وصف المطابقة).
+    يجرّب كل شيت مطابق للاسم حتى يجد الموظف.
+    """
+
+    last_how = "لا يوجد شيت مطابق"
+
+    for g in grids:
+
+        row, how = find_employee_row(g["df"], emp)
+
+        last_how = how
+
+        if row is None:
+            continue
+
+        days = {}
+
         for day in range(1, 32):
 
-            days_data[
-                f"{day:02d}"
-            ] = ""
-
-        return days_data
-
-    # -----------------------------------------------------
-    # قراءة الأيام
-    # -----------------------------------------------------
-
-    for day in range(1, 32):
-
-        day_str = f"{day:02d}"
-
-        column = None
-
-        for col in df.columns:
-
-            # يدعم "01"/"1" وأيضاً أعمدة التاريخ الكاملة
-            # (datetime) التي يستخدمها Excel لأيام الشهر
-            if parse_day_number(col) == day:
-
-                column = col
-                break
-
-        if column is None:
-
-            days_data[day_str] = ""
-            continue
-
-        value = employee_row.get(
-            column,
-            ""
-        )
-
-        if pd.isna(value):
-
             value = ""
 
-        value = str(
-            value
-        ).strip()
+            for col in g["df"].columns:
 
-        if value.lower() in [
-            "nan",
-            "none"
-        ]:
+                if parse_day_number(col) == day:
 
-            value = ""
+                    value = row.get(col, "")
 
-        days_data[
-            day_str
-        ] = value
-
-    return days_data
-
-
-# =========================================================
-# قراءة شيت الرواتب
-# =========================================================
-
-def load_salary_sheet(file):
-
-    try:
-
-        xl = pd.ExcelFile(file)
-
-        for sheet_name in xl.sheet_names:
-
-            if not any(
-                x in str(sheet_name)
-                for x in [
-                    "ملخص رواتب",
-                    "رواتب",
-                    "راتب"
-                ]
-            ):
-                continue
-
-            raw = pd.read_excel(
-                file,
-                sheet_name=sheet_name,
-                header=None,
-                dtype=str
-            )
-
-            header_row = None
-
-            for idx, row in raw.iterrows():
-
-                values = [
-                    normalize_header(x)
-                    for x in row.values
-                    if pd.notna(x)
-                ]
-
-                text = " ".join(values)
-
-                if (
-                    "الاسم" in text
-                    and "الراتب" in text
-                ):
-
-                    header_row = idx
                     break
 
-            if header_row is None:
-                continue
-
-            df = pd.read_excel(
-                file,
-                sheet_name=sheet_name,
-                header=header_row,
-                dtype=str
+            days[f"{day:02d}"] = (
+                "" if is_blank(value) else str(value).strip()
             )
 
-            df.columns = [
-                normalize_header(c)
-                for c in df.columns
-            ]
+        return days, g["sheet"], how
 
-            print(
-                f"💰 تم استخدام شيت الرواتب: {sheet_name}"
-            )
-
-            return df
-
-    except Exception as e:
-
-        print(
-            f"❌ خطأ في شيت الرواتب: {e}"
-        )
-
-    return None
+    return {f"{d:02d}": "" for d in range(1, 32)}, None, last_how
 
 
 # =========================================================
-# الحصول على بيانات الراتب
+# شيت الرواتب
 # =========================================================
 
-def get_salary_data(
-    df_sal,
-    employee
-):
+def load_salary_sheets(book):
+    """
+    يرجع كل الشيتات المرشحة للرواتب مرتبة بعدد الأعمدة
+    المفهومة (الأكثر أولاً)، حتى لا يُختار شيت خاطئ.
+    """
 
-    result = {}
+    cands = []
 
-    if df_sal is None:
-        return result
+    for sheet_name, raw in book.items():
 
-    name_col = None
+        sn = norm_ar(sheet_name)
 
-    for col in df_sal.columns:
-
-        if str(col).strip() in [
-            "الاسم",
-            "اسم الموظف",
-            "اسم"
-        ]:
-
-            name_col = col
-            break
-
-    if name_col is None:
-
-        name_col = df_sal.columns[0]
-
-    target_name = employee[
-        "clean_name"
-    ]
-
-    for _, row in df_sal.iterrows():
-
-        value = row.get(
-            name_col,
-            ""
-        )
-
-        if pd.isna(value):
+        if not any(
+            k in sn for k in ("راتب", "رواتب", "مسير")
+        ):
             continue
 
-        row_name = str(
-            value
-        ).strip()
+        def pred(cells):
 
-        clean_name = clean_arabic(
-            row_name
-        )
+            keys = [norm_ar(c) for c in cells]
 
-        if (
-            target_name in clean_name
-            or clean_name in target_name
-        ):
-
-            result = row.to_dict()
-
-            print(
-                f"💰 تم العثور على راتب الموظف: {row_name}"
+            return any(r_name(k) for k in keys) and any(
+                r_basic(k) or r_net(k) or r_ssc(k)
+                or r_ot_total(k) or r_advances(k)
+                for k in keys
             )
 
-            break
+        hr = find_sheet_header(raw, pred)
 
-    return result
+        if hr is None:
+            continue
+
+        df = table_from_raw(raw, hr)
+
+        fields = resolve_fields(df)
+
+        score = len(fields) + (
+            3 if "ملخص" in sn else 0
+        )
+
+        cands.append((score, sheet_name, df, fields))
+
+    cands.sort(key=lambda x: -x[0])
+
+    return cands
 
 
 # =========================================================
 # جلب كل بيانات الموظف
 # =========================================================
 
+ATT_WORK = {"د", "دوام"}
+ATT_LEAVE = {"م", "اجازه"}
+ATT_ABSENT = {"غ", "غياب"}
+
+
 def fetch_employee_data(
-    user_input
+    user_input,
+    choose_first=False
 ):
 
-    # -----------------------------------------------------
-    # التأكد من وجود الملف
-    # -----------------------------------------------------
+    maybe_auto_sync()
 
-    if not os.path.exists(
-        LOCAL_FILE
-    ):
-
+    if not os.path.exists(LOCAL_FILE):
         sync_data()
 
-    if not os.path.exists(
-        LOCAL_FILE
-    ):
+    book = load_workbook_raw()
 
+    if not book:
         return None
 
-    # -----------------------------------------------------
-    # شيت الموظفين
-    # -----------------------------------------------------
-
-    df_emp = load_employee_sheet(
-        LOCAL_FILE
-    )
+    df_emp, emp_sheet = load_employee_sheet(book)
 
     if df_emp is None:
 
-        print(
-            "❌ لم يتم العثور على شيت بيانات الموظفين."
-        )
+        print("❌ لم يتم العثور على شيت بيانات الموظفين.")
 
         return None
 
-    employee = find_employee(
-        df_emp,
-        user_input
-    )
+    cands = find_employees(df_emp, user_input)
+
+    employee, ambiguous = pick_candidates(cands)
+
+    if employee is None and ambiguous:
+
+        if not choose_first:
+            return {"ambiguous": ambiguous[:8]}
+
+        employee = ambiguous[0]
 
     if employee is None:
 
-        print(
-            "❌ الموظف غير موجود."
-        )
+        print("❌ الموظف غير موجود.")
 
         return None
+
+    dbg = [
+        f"الموظف: {employee['name']}",
+        f"الرقم الوطني: {employee['id_digits'] or 'غير متوفر'}",
+        f"شيت الموظفين: {emp_sheet}"
+    ]
+
+    warnings = []
 
     # -----------------------------------------------------
     # شيت الرواتب
     # -----------------------------------------------------
 
-    df_sal = load_salary_sheet(
-        LOCAL_FILE
-    )
+    sal_row, sal_fields, sal_sheet = None, {}, None
 
-    sal_data = get_salary_data(
-        df_sal,
-        employee
-    )
+    sal_cands = load_salary_sheets(book)
 
-    # -----------------------------------------------------
-    # شيت اليومية
-    # -----------------------------------------------------
+    if not sal_cands:
+        dbg.append("⚠️ لا يوجد شيت رواتب مطابق في الملف")
 
-    df_att = load_grid_sheet(
-        LOCAL_FILE,
-        [
-            "يومية",
-            "يومية د",
-            "حضور"
+    for _, sname, sdf, sfields in sal_cands:
+
+        row, how = find_employee_row(sdf, employee)
+
+        dbg.append(f"شيت الرواتب [{sname}]: {how}")
+
+        if row is not None:
+
+            sal_row, sal_fields, sal_sheet = row, sfields, sname
+
+            break
+
+    sal_found = sal_row is not None
+
+    def val(field):
+
+        col = sal_fields.get(field)
+
+        if not sal_found or col is None:
+            return 0.0
+
+        if isinstance(col, list):
+            return sum(clean_num(sal_row.get(c)) for c in col)
+
+        return clean_num(sal_row.get(col))
+
+    if sal_found:
+
+        dbg.append("ربط الأعمدة (الحقل ← العمود ← القيمة):")
+
+        for field, col in sal_fields.items():
+
+            if field in ("id", "name", "dept", "job"):
+                continue
+
+            cols = col if isinstance(col, list) else [col]
+
+            for c in cols:
+
+                dbg.append(
+                    f"  {field} ← {c} ← {sal_row.get(c)}"
+                )
+
+        missing = [
+            f for f in (
+                "basic", "ssc", "advances", "deductions",
+                "ot_total", "net"
+            ) if f not in sal_fields
         ]
-    )
 
-    att_dict = extract_grid_data(
-        df_att,
-        employee["clean_name"]
-    )
+        if missing:
 
-    # -----------------------------------------------------
-    # شيت الإضافي
-    # -----------------------------------------------------
+            dbg.append(
+                "⚠️ حقول لم يتم العثور على عمود لها: "
+                + ", ".join(missing)
+            )
 
-    df_ot = load_grid_sheet(
-        LOCAL_FILE,
-        [
-            "حساب الاضافي",
-            "حساب الإضافي",
-            "الاضافي",
-            "الإضافي"
-        ]
-    )
+            print(
+                f"⚠️ أعمدة غير معروفة بشيت الرواتب: {missing}"
+            )
 
-    ot_dict = extract_grid_data(
-        df_ot,
-        employee["clean_name"]
-    )
+    else:
+
+        warnings.append("salary_row_missing")
+
+        print(
+            f"⚠️ لم يُعثر على صف راتب للموظف: {employee['name']}"
+        )
 
     # -----------------------------------------------------
-    # تحديد الشهر/السنة الفعليين من التواريخ الحقيقية
-    # داخل الشيت (بدل الاعتماد على شهر مكتوب يدويًا)
+    # اليومية والإضافي
     # -----------------------------------------------------
 
-    period = (
-        get_report_period(df_att)
-        or get_report_period(df_ot)
+    att_grids = load_grid_sheets(
+        book,
+        ["يومية", "حضور"],
+        exclude=["اضافي", "اضافه"]
     )
+
+    ot_grids = load_grid_sheets(
+        book,
+        ["اضافي", "اضافه"]
+    )
+
+    att_dict, att_sheet, att_how = extract_grid_data(
+        att_grids, employee
+    )
+
+    ot_dict, ot_sheet, ot_how = extract_grid_data(
+        ot_grids, employee
+    )
+
+    dbg.append(f"شيت الدوام [{att_sheet}]: {att_how}")
+    dbg.append(f"شيت الإضافي [{ot_sheet}]: {ot_how}")
+
+    period = None
+
+    for g in att_grids + ot_grids:
+
+        if g["period"]:
+
+            period = g["period"]
+
+            break
 
     if period:
 
         report_year, report_month = period
 
-        days_in_month = calendar.monthrange(
-            report_year,
-            report_month
-        )[1]
-
     else:
 
         now = dt.datetime.now()
 
-        report_year = now.year
-        report_month = now.month
+        report_year, report_month = now.year, now.month
 
-        days_in_month = 31
+        warnings.append("period_guessed")
+
+    days_in_month = calendar.monthrange(
+        report_year, report_month
+    )[1]
 
     report_month_name = ARABIC_MONTHS.get(
-        report_month,
-        str(report_month)
+        report_month, str(report_month)
     )
 
     # -----------------------------------------------------
-    # حساب الدوام
+    # الدوام والإضافي اليومي
     # -----------------------------------------------------
 
-    calc_work_days = 0
-    calc_leaves = 0
-    calc_absent = 0
+    calc_work_days = calc_leaves = calc_absent = 0
+
     total_ot_days = 0
 
-    att_lines = []
-    ot_lines = []
-    daily_rows = []
+    ot_daily_total = 0.0
 
-    # -----------------------------------------------------
-    # أيام الشهر الفعلية (حسب عدد أيام الشهر الحقيقي)
-    # -----------------------------------------------------
+    daily_rows = []
 
     for day in range(1, days_in_month + 1):
 
         day_str = f"{day:02d}"
 
-        # ================================================
-        # الدوام
-        # ================================================
+        status = str(att_dict.get(day_str, "")).strip()
 
-        status = str(
-            att_dict.get(
-                day_str,
-                ""
-            )
-        ).strip()
+        code = norm_ar(status).replace(" ", "")
 
-        # تنظيف
-        status = status.replace(
-            " ",
-            ""
-        )
+        if code in ATT_WORK:
 
-        # --------------------------------
-        # د = دوام
-        # --------------------------------
-
-        if status == "د":
-
-            txt_status = "دوام فعلي ✅"
-
+            status_short = "دوام"
             calc_work_days += 1
 
-        # --------------------------------
-        # م = إجازة
-        # --------------------------------
+        elif code in ATT_LEAVE:
 
-        elif status == "م":
-
-            txt_status = "إجازة 🏖"
-
+            status_short = "إجازة"
             calc_leaves += 1
 
-        # --------------------------------
-        # غ = غياب
-        # --------------------------------
+        elif code in ATT_ABSENT:
 
-        elif status == "غ":
-
-            txt_status = "غياب ❌"
-
+            status_short = "غياب"
             calc_absent += 1
 
-        # --------------------------------
-        # خلية فارغة
-        # --------------------------------
+        elif code == "":
 
-        elif status == "":
-
-            txt_status = "غير مسجل ⚠️"
-
-        # --------------------------------
-        # أي حالة أخرى
-        # --------------------------------
+            status_short = "-"
 
         else:
 
-            txt_status = (
-                f"حالة ({status})"
-            )
+            status_short = status
 
-        att_lines.append(
-            f"🗓 `{day_str}`: {txt_status}"
-        )
-
-        # ================================================
-        # الإضافي
-        # ================================================
-
-        ot_val = clean_num(
-            ot_dict.get(
-                day_str,
-                0
-            )
-        )
+        ot_val = clean_num(ot_dict.get(day_str, 0))
 
         if ot_val > 0:
 
             total_ot_days += 1
-
-            ot_txt = (
-                f"⏱ **{ot_val:g} ساعات إضافي**"
-            )
-
-        else:
-
-            ot_txt = (
-                "لا يوجد إضافي (0 س) ➖"
-            )
-
-        ot_lines.append(
-            f"🗓 `{day_str}`: {ot_txt}"
-        )
-
-        # ================================================
-        # سجل يومي مُهيكل (للاستخدام بجدول الـ PDF)
-        # ================================================
-
-        status_short_map = {
-            "د": "دوام",
-            "م": "إجازة",
-            "غ": "غياب"
-        }
-
-        status_short = status_short_map.get(
-            status,
-            (
-                "-"
-                if status == ""
-                else status
-            )
-        )
+            ot_daily_total += ot_val
 
         try:
 
-            day_date = dt.date(
-                report_year,
-                report_month,
-                day
-            )
+            day_date = dt.date(report_year, report_month, day)
 
-            date_str = day_date.strftime(
-                "%d/%m/%Y"
-            )
+            date_str = day_date.strftime("%d/%m/%Y")
 
-            weekday_name = ARABIC_WEEKDAYS_FULL[
-                day_date.weekday()
-            ]
+            weekday_name = ARABIC_WEEKDAYS_FULL[day_date.weekday()]
 
         except ValueError:
 
             date_str = f"{day_str}/{report_month:02d}"
+
             weekday_name = ""
 
         daily_rows.append({
@@ -1744,260 +1768,134 @@ def fetch_employee_data(
             "ot_hours": ot_val
         })
 
-    # =====================================================
-    # البيانات المالية
-    # =====================================================
+    # -----------------------------------------------------
+    # البيانات المالية (من الكشف مباشرة)
+    # -----------------------------------------------------
 
-    basic_sal = clean_num(
-        sal_data.get(
-            "الراتب الاساسي",
-            sal_data.get(
-                "الراتب الأساسي",
-                sal_data.get(
-                    "الراتب",
-                    0
-                )
-            )
-        )
-    )
+    basic_sal = val("basic")
 
-    # احتياطي: إن لم يوجد الراتب الأساسي بشيت الرواتب
-    # الشهري، نستخدم القيمة من شيت بيانات العمال (المصدر
-    # الأساسي لبيانات الموظف الثابتة)
     if basic_sal == 0:
+        basic_sal = employee.get("base_sal_fallback", 0.0)
 
-        basic_sal = employee.get(
-            "base_sal_fallback",
-            0.0
-        )
+    ot_n_hrs = val("ot_n_hrs")
+    ot_h_hrs = val("ot_h_hrs")
+    ot_n_val = val("ot_n_val")
+    ot_h_val = val("ot_h_val")
 
-    # -----------------------------------------------------
-    # ساعات الإضافي
-    # -----------------------------------------------------
+    ot_total = val("ot_total")
 
-    ot_n_hrs = clean_num(
-        sal_data.get(
-            "عدد ساعات إضافي عادي",
-            sal_data.get(
-                "عدد ساعات الاضافي العادي",
-                0
-            )
-        )
-    )
-
-    ot_h_hrs = clean_num(
-        sal_data.get(
-            "عدد ساعات إضافي جمع",
-            sal_data.get(
-                "عدد ساعات إضافي عطل",
-                0
-            )
-        )
-    )
-
-    # -----------------------------------------------------
-    # قيمة الإضافي
-    # -----------------------------------------------------
-
-    ot_n_val = clean_num(
-        sal_data.get(
-            "استحقاق العادي",
-            sal_data.get(
-                "استحقاق اضافي عادي",
-                0
-            )
-        )
-    )
-
-    ot_h_val = clean_num(
-        sal_data.get(
-            "استحقاق الجمع",
-            sal_data.get(
-                "استحقاق إضافي جمع",
-                sal_data.get(
-                    "استحقاق العطل",
-                    0
-                )
-            )
-        )
-    )
-
-    # -----------------------------------------------------
-    # مجموع الإضافي
-    # -----------------------------------------------------
-
-    ot_total = clean_num(
-        sal_data.get(
-            "مجموع الاضافي",
-            sal_data.get(
-                "مجموع الإضافي",
-                ot_n_val + ot_h_val
-            )
-        )
-    )
-
-    # إذا كان مجموع الإضافي غير موجود
     if ot_total == 0:
+        ot_total = ot_n_val + ot_h_val
 
-        ot_total = (
-            ot_n_val
-            + ot_h_val
-        )
+    bonus = val("bonus") + val("allow")
 
-    # -----------------------------------------------------
-    # المكافآت
-    # -----------------------------------------------------
+    ssc = val("ssc")
+    advances = val("advances")
+    deductions = val("deductions")
 
-    bonus = clean_num(
-        sal_data.get(
-            "مكافأة",
-            sal_data.get(
-                "مكافآت",
-                sal_data.get(
-                    "حوافز",
-                    0
-                )
+    calc_net = round(
+        basic_sal + ot_total + bonus
+        - ssc - advances - deductions,
+        2
+    )
+
+    net_col = sal_fields.get("net")
+
+    net_in_sheet = (
+        sal_found
+        and net_col is not None
+        and not is_blank(sal_row.get(net_col))
+    )
+
+    other_adj = 0.0
+
+    if not sal_found:
+
+        net_salary = None
+
+    elif net_in_sheet:
+
+        # صافي الراتب الرسمي من الكشف هو المرجع
+        net_salary = round(clean_num(sal_row.get(net_col)), 2)
+
+        diff = round(net_salary - calc_net, 2)
+
+        if abs(diff) >= 0.01:
+
+            # فرق بين مجموع البنود المعروضة وصافي الكشف:
+            # لا نخفيه، نعرضه كبند مستقل ليتطابق الإجمالي
+            other_adj = diff
+
+            dbg.append(
+                f"⚠️ صافي الكشف {net_salary:.2f} يختلف عن "
+                f"المحسوب {calc_net:.2f} (فرق {diff:+.2f}) "
+                "← غالباً هناك عمود استحقاق/اقتطاع غير معروف"
             )
-        )
-    )
 
-    # -----------------------------------------------------
-    # الضمان
-    # -----------------------------------------------------
-
-    ssc = clean_num(
-        sal_data.get(
-            "الضمان",
-            sal_data.get(
-                "الضمان الاجتماعي",
-                0
+            print(
+                f"⚠️ فرق بالصافي للموظف {employee['name']}: {diff:+.2f}"
             )
-        )
-    )
-
-    # -----------------------------------------------------
-    # الحسميات
-    # -----------------------------------------------------
-
-    deductions = clean_num(
-        sal_data.get(
-            "حسم",
-            sal_data.get(
-                "الحسم",
-                sal_data.get(
-                    "حسومات",
-                    0
-                )
-            )
-        )
-    )
-
-    # -----------------------------------------------------
-    # السلف
-    # -----------------------------------------------------
-
-    advances = clean_num(
-        sal_data.get(
-            "السلف",
-            sal_data.get(
-                "السلفة",
-                0
-            )
-        )
-    )
-
-    # =====================================================
-    # صافي الراتب
-    # نعتمد القيمة الجاهزة من شيت الرواتب مباشرة (وهي
-    # القيمة المدققة فعلياً من الشركة) بدلاً من إعادة حسابها،
-    # لضمان تطابق 100% مع الشيت. إن لم تتوفر، نحسبها يدوياً.
-    # =====================================================
-
-    net_salary_raw = sal_data.get(
-        "صافي الراتب",
-        None
-    )
-
-    if (
-        net_salary_raw is not None
-        and str(net_salary_raw).strip() not in [
-            "", "nan", "None"
-        ]
-    ):
-
-        net_salary = round(
-            clean_num(net_salary_raw),
-            2
-        )
 
     else:
 
-        net_salary = round(
-            basic_sal
-            + ot_total
-            + bonus
-            - ssc
-            - advances
-            - deductions,
-            2
+        net_salary = calc_net
+
+        dbg.append(
+            "ℹ️ لا يوجد عمود صافي بالكشف - تم الحساب: "
+            "الأساسي + الإضافي + المكافآت − الضمان − السلف − الحسومات"
         )
 
-    # =====================================================
-    # تحديث بيانات الموظف
-    # =====================================================
+    ot_sheet_hrs = ot_n_hrs + ot_h_hrs
+
+    if abs(ot_sheet_hrs - ot_daily_total) > 0.01:
+
+        dbg.append(
+            f"ℹ️ ساعات الإضافي بشيت الرواتب = {ot_sheet_hrs:g} "
+            f"بينما مجموع الإضافي اليومي = {ot_daily_total:g}"
+        )
+
+    dbg.append(
+        f"الحساب: {basic_sal:.2f} + {ot_total:.2f} + {bonus:.2f} "
+        f"− {ssc:.2f} − {advances:.2f} − {deductions:.2f} "
+        f"= {calc_net:.2f}"
+    )
 
     employee.update({
 
+        "sal_found": sal_found,
+        "sal_sheet": sal_sheet,
+        "other_adj": other_adj,
+        "warnings": warnings,
+        "debug": dbg,
+
         "basic_sal": basic_sal,
-
         "ot_n_hrs": ot_n_hrs,
-
         "ot_h_hrs": ot_h_hrs,
-
         "ot_n_val": ot_n_val,
-
         "ot_h_val": ot_h_val,
-
         "ot_total": ot_total,
-
         "bonus": bonus,
-
         "ssc": ssc,
-
         "deductions": deductions,
-
         "advances": advances,
-
         "net_salary": net_salary,
 
         "work_days": calc_work_days,
-
         "leaves": calc_leaves,
-
         "absent": calc_absent,
-
         "ot_days": total_ot_days,
-
-        "att_report": "\n".join(
-            att_lines
-        ),
-
-        "ot_report": "\n".join(
-            ot_lines
-        ),
+        "ot_daily_total": ot_daily_total,
 
         "daily_rows": daily_rows,
 
         "report_year": report_year,
-
         "report_month": report_month,
-
         "report_month_name": report_month_name,
-
         "days_in_month": days_in_month
     })
 
     return employee
+
 
 
 # =========================================================
@@ -2591,20 +2489,42 @@ def generate_professional_pdf(
             f'{data["deductions"]:.2f}',
             ar_txt("اقتطاعات وحسومات"),
             f'{data["bonus"]:.2f}',
-            ar_txt("مكافآت وحوافز")
+            ar_txt("مكافآت وحوافز وبدلات")
         ]
     ]
+
+    adj = data.get("other_adj", 0.0)
+
+    if adj >= 0.01:
+
+        finance_data.append([
+            "",
+            "",
+            f"{adj:.2f}",
+            ar_txt("بنود أخرى في الكشف")
+        ])
+
+    elif adj <= -0.01:
+
+        finance_data.append([
+            f"{-adj:.2f}",
+            ar_txt("بنود أخرى في الكشف"),
+            "",
+            ""
+        ])
 
     total_deductions = (
         data["ssc"]
         + data["advances"]
         + data["deductions"]
+        + max(-adj, 0.0)
     )
 
     total_earnings = (
         data["basic_sal"]
         + data["ot_total"]
         + data["bonus"]
+        + max(adj, 0.0)
     )
 
     finance_data.append([
@@ -3441,19 +3361,266 @@ def handle_source_status(message):
 
 
 # =========================================================
+# مساعدات الرسائل
+# =========================================================
+#
+# - تنسيق HTML بدل Markdown: أي اسم يحتوي _ أو * كان يكسر
+#   رسالة Markdown ويمنع وصول الكشف.
+# - تقسيم الرسالة الطويلة (حد تيليجرام 4096 حرف).
+# - callback_data محدودة بـ 64 بايت، والاسم العربي قد
+#   يتجاوزها، لذلك نستخدم الرقم الوطني أو رمزًا قصيرًا.
+# =========================================================
+
+from collections import OrderedDict
+
+_PENDING = OrderedDict()
+
+
+def make_token(key):
+
+    tok = "".join(
+        random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8)
+    )
+
+    _PENDING[tok] = key
+
+    while len(_PENDING) > 2000:
+        _PENDING.popitem(last=False)
+
+    return tok
+
+
+def employee_key(emp):
+
+    if emp.get("id_digits") and len(emp["id_digits"]) <= 40:
+        return emp["id_digits"]
+
+    return make_token(emp["name"])
+
+
+def resolve_callback_key(raw):
+
+    if raw.startswith("t:"):
+        return _PENDING.get(raw[2:])
+
+    return raw
+
+
+def split_text(text, limit=3900):
+
+    chunks, cur = [], ""
+
+    for line in text.split("\n"):
+
+        if len(cur) + len(line) + 1 > limit and cur:
+
+            chunks.append(cur)
+            cur = ""
+
+        cur += line + "\n"
+
+    if cur.strip():
+        chunks.append(cur)
+
+    return chunks
+
+
+def fmt_money(x):
+
+    return f"{x:.2f}"
+
+
+def build_report_text(d):
+
+    e = _html.escape
+
+    period = f"{d['report_month_name']} {d['report_year']}"
+
+    L = [
+        f"🏢 <b>{e(COMPANY_NAME)}</b>",
+        "",
+        "📋 <b>كشف حساب الراتب وسجل الدوام والإضافي المفصل</b>",
+        f"🗓 <b>الشهر:</b> {e(period)}",
+        "",
+        "══════════════════════════",
+        "",
+        "👤 <b>بيانات الموظف:</b>",
+        "",
+        f"• <b>الاسم:</b> {e(d['name'])}",
+        f"• <b>القسم:</b> {e(d['dept'])}",
+        f"• <b>المسمى:</b> {e(d['job'])}",
+        f"• <b>الرقم الوطني:</b> <code>{e(d['nat_id'])}</code>",
+        ""
+    ]
+
+    if d["sal_found"]:
+
+        L += [
+            "💰 <b>البيانات المالية والاقتطاعات:</b>",
+            "",
+            f"• الراتب الأساسي: <b>{fmt_money(d['basic_sal'])}</b> د.أ",
+            f"• إجمالي مستحقات الإضافي: <b>{fmt_money(d['ot_total'])}</b> د.أ",
+            f"• مكافآت وحوافز وبدلات: <b>{fmt_money(d['bonus'])}</b> د.أ",
+            f"• اقتطاع الضمان الاجتماعي: <b>{fmt_money(d['ssc'])}</b> د.أ",
+            f"• مجموع السلف: <b>{fmt_money(d['advances'])}</b> د.أ",
+            f"• اقتطاعات وحسومات: <b>{fmt_money(d['deductions'])}</b> د.أ"
+        ]
+
+        if abs(d["other_adj"]) >= 0.01:
+
+            sign = "+" if d["other_adj"] > 0 else "−"
+
+            L.append(
+                f"• بنود أخرى في الكشف: <b>{sign}"
+                f"{fmt_money(abs(d['other_adj']))}</b> د.أ"
+            )
+
+        L += [
+            "",
+            "──────────────────────────",
+            "",
+            "💵 <b>صافي الراتب المستحق للصرف:</b>",
+            f"<b>{fmt_money(d['net_salary'])} دينار أردني</b>"
+        ]
+
+    else:
+
+        L += [
+            "⚠️ <b>تنبيه:</b> لم يتم العثور على سجل راتب هذا الموظف "
+            f"في كشف رواتب شهر {e(period)}.",
+            "لذلك لا يمكن عرض الاستحقاقات والاقتطاعات وصافي الراتب، "
+            "يرجى مراجعة الإدارة / المحاسب."
+        ]
+
+    total_ot = d["ot_n_hrs"] + d["ot_h_hrs"]
+
+    L += [
+        "",
+        "══════════════════════════",
+        "",
+        "⏱ <b>ملخص العمل الإضافي:</b>",
+        "",
+        f"• إضافي أيام عادية: <b>{d['ot_n_hrs']:g}</b> ساعة = "
+        f"<b>{fmt_money(d['ot_n_val'])}</b> د.أ",
+        f"• إضافي عطل وأعياد: <b>{d['ot_h_hrs']:g}</b> ساعة = "
+        f"<b>{fmt_money(d['ot_h_val'])}</b> د.أ",
+        f"• إجمالي ساعات الإضافي: <b>{total_ot:g}</b> ساعة",
+        "",
+        "📊 <b>ملخص الدوام:</b>",
+        "",
+        f"• أيام الدوام الفعلي: <b>{d['work_days']}</b> يوم",
+        f"• الإجازات: <b>{d['leaves']}</b> يوم",
+        f"• أيام الغياب: <b>{d['absent']}</b> يوم",
+        f"• عدد أيام إنجاز الإضافي: <b>{d['ot_days']}</b> يوم",
+        "",
+        "══════════════════════════",
+        "",
+        f"⏱ <b>كشف ساعات العمل الإضافي التفصيلي "
+        f"(01 - {d['days_in_month']:02d}):</b>",
+        "",
+        "──────────────────────────",
+        ""
+    ]
+
+    for r in d["daily_rows"]:
+
+        ot_txt = (
+            f"⏱ <b>{r['ot_hours']:g} ساعات إضافي</b>"
+            if r["ot_hours"] > 0
+            else "لا يوجد إضافي (0 س) ➖"
+        )
+
+        L.append(f"🗓 <code>{r['day']:02d}</code>: {ot_txt}")
+
+    L += [
+        "",
+        "══════════════════════════",
+        "",
+        f"📅 <b>كشف سجل الدوام والغياب اليومي "
+        f"(01 - {d['days_in_month']:02d}):</b>",
+        "",
+        "──────────────────────────",
+        ""
+    ]
+
+    status_txt = {
+        "دوام": "دوام فعلي ✅",
+        "إجازة": "إجازة 🏖",
+        "غياب": "غياب ❌",
+        "-": "غير مسجل ⚠️"
+    }
+
+    for r in d["daily_rows"]:
+
+        txt = status_txt.get(
+            r["status"], f"حالة ({e(str(r['status']))})"
+        )
+
+        L.append(f"🗓 <code>{r['day']:02d}</code>: {txt}")
+
+    L += [
+        "",
+        "══════════════════════════",
+        "",
+        random.choice(MOTIVATIONAL_TIPS)
+    ]
+
+    return "\n".join(L)
+
+
+def send_report(chat_id, data, reply_to=None):
+
+    text = build_report_text(data)
+
+    chunks = split_text(text)
+
+    markup = None
+
+    if data["sal_found"]:
+
+        markup = types.InlineKeyboardMarkup()
+
+        markup.add(
+            types.InlineKeyboardButton(
+                "📥 تحميل قسيمة الراتب PDF",
+                callback_data=f"pdf_{employee_key(data)}"
+            )
+        )
+
+    for i, chunk in enumerate(chunks):
+
+        last = i == len(chunks) - 1
+
+        kwargs = dict(
+            parse_mode="HTML",
+            reply_markup=markup if last else None
+        )
+
+        if i == 0 and reply_to:
+
+            bot.send_message(
+                chat_id,
+                chunk,
+                reply_to_message_id=reply_to,
+                **kwargs
+            )
+
+        else:
+
+            bot.send_message(chat_id, chunk, **kwargs)
+
+
+# =========================================================
 # زر PDF
 # =========================================================
 
 @bot.callback_query_handler(
-    func=lambda call:
-        call.data.startswith("pdf_")
+    func=lambda call: call.data.startswith("pdf_")
 )
 def handle_pdf_callback(call):
 
-    user_id = call.data.replace(
-        "pdf_",
-        "",
-        1
+    key = resolve_callback_key(
+        call.data.replace("pdf_", "", 1)
     )
 
     bot.answer_callback_query(
@@ -3461,11 +3628,19 @@ def handle_pdf_callback(call):
         "⏳ جاري إنشاء قسيمة الراتب..."
     )
 
-    data = fetch_employee_data(
-        user_id
-    )
+    if not key:
 
-    if data is None:
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ انتهت صلاحية الزر، أعد إرسال الاسم أو الرقم "
+            "الوطني ثم اضغط الزر مرة أخرى."
+        )
+
+        return
+
+    data = fetch_employee_data(key, choose_first=True)
+
+    if data is None or data.get("ambiguous"):
 
         bot.send_message(
             call.message.chat.id,
@@ -3474,17 +3649,23 @@ def handle_pdf_callback(call):
 
         return
 
-    try:
+    if not data["sal_found"]:
 
-        pdf_file = generate_professional_pdf(
-            data
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ لا يوجد سجل راتب لهذا الموظف في الكشف الحالي، "
+            "لذلك لا يمكن إصدار قسيمة."
         )
 
+        return
+
+    try:
+
+        pdf_file = generate_professional_pdf(data)
+
         filename = (
-            f"Salary_Slip_"
-            f"{data['report_month']:02d}_"
-            f"{data['report_year']}_"
-            f"{data['name']}.pdf"
+            f"Salary_Slip_{data['report_month']:02d}_"
+            f"{data['report_year']}_{data['name']}.pdf"
         )
 
         bot.send_document(
@@ -3492,24 +3673,100 @@ def handle_pdf_callback(call):
             pdf_file,
             visible_file_name=filename,
             caption=(
-                f"📄 **قسيمة راتب شهر "
-                f"{data['report_month_name']} "
-                f"{data['report_year']}**\n"
-                f"👤 الموظف: {data['name']}"
+                f"📄 <b>قسيمة راتب شهر "
+                f"{_html.escape(data['report_month_name'])} "
+                f"{data['report_year']}</b>\n"
+                f"👤 الموظف: {_html.escape(data['name'])}"
             ),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
     except Exception as e:
 
-        print(
-            f"❌ خطأ إنشاء PDF: {e}"
-        )
+        print(f"❌ خطأ إنشاء PDF: {e}")
 
         bot.send_message(
             call.message.chat.id,
             "❌ حدث خطأ أثناء إنشاء قسيمة PDF."
         )
+
+
+# =========================================================
+# اختيار موظف عند تشابه الأسماء (للإدارة)
+# =========================================================
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith("pick_")
+)
+def handle_pick_callback(call):
+
+    key = resolve_callback_key(
+        call.data.replace("pick_", "", 1)
+    )
+
+    bot.answer_callback_query(call.id)
+
+    if not key:
+
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ انتهت صلاحية الاختيار، أعد البحث."
+        )
+
+        return
+
+    data = fetch_employee_data(key, choose_first=True)
+
+    if data is None or data.get("ambiguous"):
+
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ تعذر العثور على بيانات الموظف."
+        )
+
+        return
+
+    send_report(call.message.chat.id, data)
+
+
+# =========================================================
+# /debug - تشخيص حساب راتب موظف (للإدارة فقط)
+# =========================================================
+
+@bot.message_handler(commands=["debug"])
+def handle_debug(message):
+
+    if message.from_user.id != ADMIN_ID:
+
+        bot.reply_to(message, "⛔ هذا الأمر مخصص للإدارة فقط.")
+
+        return
+
+    parts = message.text.split(maxsplit=1)
+
+    if len(parts) < 2 or not parts[1].strip():
+
+        bot.reply_to(
+            message,
+            "الاستخدام: /debug <اسم الموظف أو رقمه الوطني>\n"
+            "يعرض كيف تم ربط أعمدة الكشف بقيم الراتب."
+        )
+
+        return
+
+    data = fetch_employee_data(parts[1].strip(), choose_first=True)
+
+    if data is None:
+
+        bot.reply_to(message, "⚠️ الموظف غير موجود.")
+
+        return
+
+    text = "🔧 تشخيص الراتب\n\n" + "\n".join(data["debug"])
+
+    for chunk in split_text(text):
+
+        bot.send_message(message.chat.id, chunk)
 
 
 # =========================================================
@@ -3524,16 +3781,12 @@ def handle_query(message):
 
     user_input = message.text.strip()
 
-    if not user_input:
+    if not user_input or user_input.startswith("/"):
         return
 
-    print(
-        f"🔎 استعلام جديد: {user_input}"
-    )
+    print(f"🔎 استعلام جديد: {user_input}")
 
-    data = fetch_employee_data(
-        user_input
-    )
+    data = fetch_employee_data(user_input)
 
     if data is None:
 
@@ -3545,100 +3798,44 @@ def handle_query(message):
 
         return
 
-    # =====================================================
-    # التقرير
-    # =====================================================
+    if data.get("ambiguous"):
 
-    total_ot_hours = (
-        data["ot_n_hrs"]
-        + data["ot_h_hrs"]
-    )
+        # لا نعرض قائمة أسماء الموظفين لغير الإدارة (خصوصية)
+        if message.from_user.id != ADMIN_ID:
 
-    report = f"""
-🏢 **{COMPANY_NAME}**
-
-📋 **كشف حساب الراتب وسجل الدوام والإضافي المفصل**
-
-══════════════════════════
-
-👤 **بيانات الموظف:**
-
-• **الاسم:** {data['name']}
-• **القسم:** {data['dept']}
-• **المسمى:** {data['job']}
-• **الرقم الوطني:** `{data['nat_id']}`
-
-💰 **البيانات المالية والاقتطاعات:**
-
-• الراتب الأساسي: **{data['basic_sal']:.2f}** د.أ
-• إجمالي مستحقات الإضافي: **{data['ot_total']:.2f}** د.أ
-• مكافآت وحوافز: **{data['bonus']:.2f}** د.أ
-• اقتطاع الضمان الاجتماعي: **{data['ssc']:.2f}** د.أ
-• مجموع السلف: **{data['advances']:.2f}** د.أ
-• اقتطاعات وحسومات: **{data['deductions']:.2f}** د.أ
-
-──────────────────────────
-
-💵 **صافي الراتب المستحق للصرف:
-{data['net_salary']:.2f} دينار أردني**
-
-══════════════════════════
-
-⏱ **ملخص العمل الإضافي:**
-
-• إضافي أيام عادية: **{data['ot_n_hrs']:g}** ساعة = **{data['ot_n_val']:.2f}** د.أ
-• إضافي عطل وأعياد: **{data['ot_h_hrs']:g}** ساعة = **{data['ot_h_val']:.2f}** د.أ
-• إجمالي ساعات الإضافي: **{total_ot_hours:g}** ساعة
-
-📊 **ملخص الدوام:**
-
-• أيام الدوام الفعلي: **{data['work_days']}** يوم
-• الإجازات: **{data['leaves']}** يوم
-• أيام الغياب: **{data['absent']}** يوم
-• عدد أيام إنجاز الإضافي: **{data['ot_days']}** يوم
-
-══════════════════════════
-
-⏱ **كشف ساعات العمل الإضافي التفصيلي (01 - {data['days_in_month']:02d}):**
-
-──────────────────────────
-
-{data['ot_report']}
-
-══════════════════════════
-
-📅 **كشف سجل الدوام والغياب اليومي (01 - {data['days_in_month']:02d}):**
-
-──────────────────────────
-
-{data['att_report']}
-
-══════════════════════════
-
-{random.choice(MOTIVATIONAL_TIPS)}
-"""
-
-    # =====================================================
-    # زر PDF
-    # =====================================================
-
-    markup = types.InlineKeyboardMarkup()
-
-    markup.add(
-        types.InlineKeyboardButton(
-            "📥 تحميل قسيمة الراتب PDF",
-            callback_data=(
-                f"pdf_{data['nat_id']}"
+            bot.reply_to(
+                message,
+                "⚠️ الاسم مشترك بين أكثر من موظف.\n"
+                "الرجاء إرسال الرقم الوطني أو الاسم الكامل."
             )
+
+            return
+
+        markup = types.InlineKeyboardMarkup()
+
+        for emp in data["ambiguous"]:
+
+            markup.add(
+                types.InlineKeyboardButton(
+                    f"{emp['name']} ({emp['nat_id']})",
+                    callback_data=f"pick_{employee_key(emp)}"
+                )
+            )
+
+        bot.reply_to(
+            message,
+            "وُجد أكثر من موظف مطابق، اختر الموظف المطلوب:",
+            reply_markup=markup
         )
+
+        return
+
+    send_report(
+        message.chat.id,
+        data,
+        reply_to=message.message_id
     )
 
-    bot.reply_to(
-        message,
-        report,
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
 
 
 # =========================================================
